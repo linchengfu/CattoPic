@@ -3,6 +3,7 @@ import type { Env, ImageMetadata, UploadResult } from '../types';
 import { StorageService } from '../services/storage';
 import { MetadataService } from '../services/metadata';
 import { ImageProcessor } from '../services/imageProcessor';
+import { CompressionService, parseCompressionOptions } from '../services/compression';
 import { successResponse, errorResponse } from '../utils/response';
 import { generateUUID, parseTags, parseNumber } from '../utils/validation';
 
@@ -22,6 +23,9 @@ export async function uploadHandler(c: Context<{ Bindings: Env }>): Promise<Resp
     const tagsString = formData.get('tags') as string | null;
     const expiryMinutes = parseNumber(formData.get('expiryMinutes') as string | null, 0);
 
+    // Parse compression options from FormData
+    const compressionOptions = parseCompressionOptions(formData);
+
     if (!files || files.length === 0) {
       return errorResponse('No files provided');
     }
@@ -33,6 +37,9 @@ export async function uploadHandler(c: Context<{ Bindings: Env }>): Promise<Resp
     const tags = parseTags(tagsString);
     const storage = new StorageService(c.env.R2_BUCKET);
     const metadata = new MetadataService(c.env.DB);
+
+    // Initialize compression service if IMAGES binding is available
+    const compression = c.env.IMAGES ? new CompressionService(c.env.IMAGES) : null;
 
     const results: UploadResult[] = [];
     const workerUrl = new URL(c.req.url).origin;
@@ -72,14 +79,55 @@ export async function uploadHandler(c: Context<{ Bindings: Env }>): Promise<Resp
         const contentType = ImageProcessor.getContentType(imageInfo.format);
         await storage.upload(paths.original, arrayBuffer, contentType);
 
-        // For non-GIF images, we store the same file for webp/avif paths
-        // In production, you would convert to WebP/AVIF here using photon-rs or similar
+        // For non-GIF images, compress and store WebP/AVIF versions
         const isGif = imageInfo.format === 'gif';
+        let webpSize = 0;
+        let avifSize = 0;
 
         if (!isGif) {
-          // Store original as webp/avif placeholders (real conversion would happen here)
-          await storage.upload(paths.webp, arrayBuffer, contentType);
-          await storage.upload(paths.avif, arrayBuffer, contentType);
+          if (compression) {
+            // Use Cloudflare Images for real compression
+            try {
+              const compressionResult = await compression.compress(
+                arrayBuffer,
+                imageInfo.format,
+                compressionOptions
+              );
+
+              // Upload compressed WebP
+              if (compressionResult.webp) {
+                await storage.upload(paths.webp, compressionResult.webp.data, 'image/webp');
+                webpSize = compressionResult.webp.size;
+              } else {
+                // Fallback: store original
+                await storage.upload(paths.webp, arrayBuffer, contentType);
+                webpSize = file.size;
+              }
+
+              // Upload compressed AVIF
+              if (compressionResult.avif) {
+                await storage.upload(paths.avif, compressionResult.avif.data, 'image/avif');
+                avifSize = compressionResult.avif.size;
+              } else {
+                // Fallback: store original
+                await storage.upload(paths.avif, arrayBuffer, contentType);
+                avifSize = file.size;
+              }
+            } catch (compressionError) {
+              console.error('Compression failed, falling back to original:', compressionError);
+              // Fallback: store original for both formats
+              await storage.upload(paths.webp, arrayBuffer, contentType);
+              await storage.upload(paths.avif, arrayBuffer, contentType);
+              webpSize = file.size;
+              avifSize = file.size;
+            }
+          } else {
+            // No compression service available, store original
+            await storage.upload(paths.webp, arrayBuffer, contentType);
+            await storage.upload(paths.avif, arrayBuffer, contentType);
+            webpSize = file.size;
+            avifSize = file.size;
+          }
         }
 
         // Calculate expiry time
@@ -103,8 +151,8 @@ export async function uploadHandler(c: Context<{ Bindings: Env }>): Promise<Resp
           paths,
           sizes: {
             original: file.size,
-            webp: isGif ? 0 : file.size,
-            avif: isGif ? 0 : file.size
+            webp: webpSize,
+            avif: avifSize
           }
         };
 

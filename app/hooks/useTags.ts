@@ -55,15 +55,20 @@ export function useTags(): UseTagsReturn {
     try {
       const response = await api.post<MutationResponse>('/api/tags', { name });
       if (response.success) {
-        await fetchTags();
+        // 本地更新：添加新标签到列表
+        if (response.tag) {
+          setTags(prev => [...prev, response.tag!]);
+        } else {
+          // 如果没有返回标签数据，添加一个默认结构
+          setTags(prev => [...prev, { name, count: 0 }]);
+        }
         return true;
       }
       return false;
-    } catch (err) {
-      console.error('创建标签失败:', err);
+    } catch {
       return false;
     }
-  }, [fetchTags]);
+  }, []);
 
   const renameTag = useCallback(async (oldName: string, newName: string): Promise<boolean> => {
     try {
@@ -72,15 +77,27 @@ export function useTags(): UseTagsReturn {
         { newName }
       );
       if (response.success) {
-        await fetchTags();
+        // 本地更新：重命名标签
+        setTags(prev => prev.map(tag =>
+          tag.name === oldName ? { ...tag, name: newName } : tag
+        ));
+        // 更新选中状态
+        setSelectedTags(prev => {
+          if (prev.has(oldName)) {
+            const next = new Set(prev);
+            next.delete(oldName);
+            next.add(newName);
+            return next;
+          }
+          return prev;
+        });
         return true;
       }
       return false;
-    } catch (err) {
-      console.error('重命名标签失败:', err);
+    } catch {
       return false;
     }
-  }, [fetchTags]);
+  }, []);
 
   const deleteTag = useCallback(async (name: string): Promise<boolean> => {
     try {
@@ -88,7 +105,8 @@ export function useTags(): UseTagsReturn {
         `/api/tags/${encodeURIComponent(name)}`
       );
       if (response.success) {
-        await fetchTags();
+        // 本地更新：删除标签
+        setTags(prev => prev.filter(tag => tag.name !== name));
         setSelectedTags(prev => {
           const next = new Set(prev);
           next.delete(name);
@@ -97,11 +115,10 @@ export function useTags(): UseTagsReturn {
         return true;
       }
       return false;
-    } catch (err) {
-      console.error('删除标签失败:', err);
+    } catch {
       return false;
     }
-  }, [fetchTags]);
+  }, []);
 
   const deleteTags = useCallback(async (names: string[]): Promise<boolean> => {
     try {
@@ -112,15 +129,16 @@ export function useTags(): UseTagsReturn {
       );
       const allSuccess = results.every(r => r.success);
       if (allSuccess) {
-        await fetchTags();
+        // 本地更新：批量删除标签
+        const namesSet = new Set(names);
+        setTags(prev => prev.filter(tag => !namesSet.has(tag.name)));
         setSelectedTags(new Set());
       }
       return allSuccess;
-    } catch (err) {
-      console.error('批量删除标签失败:', err);
+    } catch {
       return false;
     }
-  }, [fetchTags]);
+  }, []);
 
   const toggleTagSelection = useCallback((name: string) => {
     setSelectedTags(prev => {

@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useMemo } from "react";
 import { motion } from 'motion/react';
 import { ImageFile } from "../types";
 import { getFullUrl } from "../utils/baseUrl";
@@ -17,9 +17,9 @@ import {
   copyHtmlImgTag,
   copyToClipboard,
 } from "../utils/copyImageUtils";
-import { 
-  ClipboardCopyIcon, 
-  EyeOpenIcon, 
+import {
+  ClipboardCopyIcon,
+  EyeOpenIcon,
   TrashIcon,
   FileIcon,
   CheckIcon,
@@ -27,32 +27,34 @@ import {
   CopyIcon
 } from './ui/icons';
 
-// 格式化文件大小 (保留以备将来使用)
-const _formatFileSize = (bytes: number): string => {
-  if (bytes < 1024) return bytes + " B";
-  else if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + " KB";
-  else if (bytes < 1024 * 1024 * 1024)
-    return (bytes / (1024 * 1024)).toFixed(2) + " MB";
-  else return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+// 根据方向确定高度类和比例
+const getHeightAndAspectRatio = (orientation: string) => {
+  switch (orientation.toLowerCase()) {
+    case "portrait":
+      return { heightClass: "h-auto", aspectRatio: "aspect-3/4" };
+    case "landscape":
+      return { heightClass: "h-auto", aspectRatio: "aspect-4/3" };
+    case "square":
+      return { heightClass: "h-auto", aspectRatio: "aspect-square" };
+    default:
+      return { heightClass: "h-auto", aspectRatio: "aspect-auto" };
+  }
 };
-void _formatFileSize;
 
-export default function ImageCard({
-  image,
-  onClick,
-  onDelete,
-}: {
+interface ImageCardProps {
   image: ImageFile;
   onClick: () => void;
   onDelete: (id: string) => Promise<void>;
-}) {
-  const [copyStatus, _setCopyStatus] = useState<"idle" | "copied" | "error">(
-    "idle"
-  );
-  void _setCopyStatus;
+}
+
+const ImageCard = React.memo(function ImageCard({
+  image,
+  onClick,
+  onDelete,
+}: ImageCardProps) {
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [isHovered, setIsHovered] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const isGif = image.format.toLowerCase() === "gif";
   const cardRef = useRef<HTMLDivElement>(null);
 
   // 右键菜单状态
@@ -62,60 +64,34 @@ export default function ImageCard({
     y: 0,
   });
 
+  // 使用 useMemo 缓存计算结果
+  const isGif = useMemo(() => image.format.toLowerCase() === "gif", [image.format]);
+  const { heightClass, aspectRatio } = useMemo(
+    () => getHeightAndAspectRatio(image.orientation),
+    [image.orientation]
+  );
+
   const handleImageLoad = useCallback(() => {
     setIsLoading(false);
   }, []);
 
-  // 根据方向确定高度类和比例
-  const getHeightAndAspectRatio = (orientation: string) => {
-    switch (orientation.toLowerCase()) {
-      case "portrait":
-        return {
-          heightClass: "h-auto",
-          aspectRatio: "aspect-3/4",
-        };
-      case "landscape":
-        return {
-          heightClass: "h-auto",
-          aspectRatio: "aspect-4/3",
-        };
-      case "square":
-        return {
-          heightClass: "h-auto",
-          aspectRatio: "aspect-square",
-        };
-      default:
-        return {
-          heightClass: "h-auto",
-          aspectRatio: "aspect-auto",
-        };
-    }
-  };
-
-  const { heightClass, aspectRatio } = getHeightAndAspectRatio(
-    image.orientation
-  );
-
   // 处理右键菜单
-  const handleContextMenu = (e: React.MouseEvent) => {
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     setContextMenu({
       isOpen: true,
       x: e.clientX,
       y: e.clientY,
     });
-  };
+  }, []);
 
   // 关闭右键菜单
-  const closeContextMenu = () => {
-    setContextMenu({
-      ...contextMenu,
-      isOpen: false,
-    });
-  };
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(prev => ({ ...prev, isOpen: false }));
+  }, []);
 
   // 复制回调
-  const handleCopy = async (type: string) => {
+  const handleCopy = useCallback(async (type: string) => {
     try {
       let success = false;
 
@@ -142,26 +118,36 @@ export default function ImageCard({
       } else {
         showToast("复制失败", "error");
       }
-    } catch (error) {
+    } catch {
       showToast("复制失败", "error");
-      console.error("复制错误:", error);
     }
-  };
+  }, [image]);
 
   // 删除图片
-  const handleDelete = async (e: React.MouseEvent) => {
+  const handleDelete = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await onDelete(image.id);
       showToast("图片已删除", "success");
-    } catch (error) {
+    } catch {
       showToast("删除失败", "error");
-      console.error("删除失败:", error);
     }
-  };
+  }, [image.id, onDelete]);
 
-  // 右键菜单项
-  const menuGroups: ContextMenuGroup[] = [
+  // 鼠标事件处理
+  const handleMouseEnter = useCallback(() => setIsHovered(true), []);
+  const handleMouseLeave = useCallback(() => setIsHovered(false), []);
+
+  // 快捷复制按钮
+  const handleQuickCopy = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    copyToClipboard(getFullUrl(image.urls?.webp || image.urls?.original || ''));
+    setCopyStatus("copied");
+    setTimeout(() => setCopyStatus("idle"), 2000);
+  }, [image.urls]);
+
+  // 右键菜单项 - 使用 useMemo 缓存
+  const menuGroups: ContextMenuGroup[] = useMemo(() => [
     {
       id: "copy",
       items: [
@@ -222,7 +208,7 @@ export default function ImageCard({
         },
       ],
     },
-  ];
+  ], [image.format, image.urls, handleCopy, onClick, handleDelete]);
 
   return (
     <>
@@ -234,8 +220,8 @@ export default function ImageCard({
         whileHover={{ y: -8, transition: { duration: 0.2 } }}
         className="rounded-xl shadow-lg overflow-hidden group cursor-pointer border border-gray-100 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-500 transition-all duration-300 h-full"
         onClick={onClick}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         onContextMenu={handleContextMenu}
       >
         <div
@@ -292,10 +278,7 @@ export default function ImageCard({
             <motion.button
               initial={{ opacity: 0 }}
               animate={{ opacity: isHovered ? 1 : 0 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                copyToClipboard(getFullUrl(image.urls?.webp || image.urls?.original || ''));
-              }}
+              onClick={handleQuickCopy}
               className="p-1.5 rounded-full bg-white/20 backdrop-blur-xs hover:bg-white/40 transition-colors"
               title="复制URL"
             >
@@ -323,4 +306,6 @@ export default function ImageCard({
       />
     </>
   );
-}
+});
+
+export default ImageCard;

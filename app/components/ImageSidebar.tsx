@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import Image from "next/image";
 import { motion, AnimatePresence } from 'motion/react';
 import ImageModal from "../components/ImageModal";
@@ -15,7 +15,7 @@ interface ImageSidebarProps {
   onDelete?: (id: string) => Promise<void>;
 }
 
-export default function ImageSidebar({
+const ImageSidebar = React.memo(function ImageSidebar({
   isOpen,
   results,
   onClose,
@@ -25,23 +25,35 @@ export default function ImageSidebar({
   const [showModal, setShowModal] = useState(false);
   const [tab, setTab] = useState<"all" | "success" | "error">("all");
 
-  const successResults = results.filter(
-    (result) => result.status === "success"
+  // 使用 useMemo 缓存过滤结果
+  const successResults = useMemo(
+    () => results.filter((result) => result.status === "success"),
+    [results]
   );
-  const errorResults = results.filter((result) => result.status === "error");
+  const errorResults = useMemo(
+    () => results.filter((result) => result.status === "error"),
+    [results]
+  );
 
   // 根据当前标签确定要显示的结果
-  const displayResults =
-    tab === "all" ? results : tab === "success" ? successResults : errorResults;
+  const displayResults = useMemo(
+    () => tab === "all" ? results : tab === "success" ? successResults : errorResults,
+    [tab, results, successResults, errorResults]
+  );
 
-  const handleImageClick = (image: ImageData) => {
+  const handleImageClick = useCallback((image: ImageData) => {
     setSelectedImage(image);
     setShowModal(true);
-  };
+  }, []);
 
-  const handleCloseModal = () => {
+  const handleCloseModal = useCallback(() => {
     setShowModal(false);
-  };
+  }, []);
+
+  // 标签切换处理
+  const handleTabAll = useCallback(() => setTab("all"), []);
+  const handleTabSuccess = useCallback(() => setTab("success"), []);
+  const handleTabError = useCallback(() => setTab("error"), []);
 
   return (
     <>
@@ -71,7 +83,7 @@ export default function ImageSidebar({
             {/* 标签切换 */}
             <div className="flex border-b border-slate-200 dark:border-slate-700">
               <button
-                onClick={() => setTab("all")}
+                onClick={handleTabAll}
                 className={`flex-1 py-3 px-4 text-sm font-medium transition-colors relative ${
                   tab === "all"
                     ? "text-indigo-600 dark:text-indigo-400"
@@ -87,7 +99,7 @@ export default function ImageSidebar({
                 )}
               </button>
               <button
-                onClick={() => setTab("success")}
+                onClick={handleTabSuccess}
                 className={`flex-1 py-3 px-4 text-sm font-medium transition-colors relative ${
                   tab === "success"
                     ? "text-green-600 dark:text-green-400"
@@ -103,7 +115,7 @@ export default function ImageSidebar({
                 )}
               </button>
               <button
-                onClick={() => setTab("error")}
+                onClick={handleTabError}
                 className={`flex-1 py-3 px-4 text-sm font-medium transition-colors relative ${
                   tab === "error"
                     ? "text-red-600 dark:text-red-400"
@@ -239,4 +251,6 @@ export default function ImageSidebar({
       </AnimatePresence>
     </>
   );
-}
+});
+
+export default ImageSidebar;

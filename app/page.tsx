@@ -10,10 +10,11 @@ import UploadSection from './components/UploadSection'
 import UploadProgress from './components/UploadProgress'
 import ImageSidebar from './components/ImageSidebar'
 import PreviewSidebar from './components/upload/PreviewSidebar'
+import CompressionSettings from './components/upload/CompressionSettings'
 import { motion } from 'motion/react'
 import { ImageIcon, PlusCircledIcon } from './components/ui/icons'
 
-const DEFAULT_MAX_UPLOAD_COUNT = 10;
+const DEFAULT_MAX_UPLOAD_COUNT = 20;
 
 export default function Home() {
   const [showApiKeyModal, setShowApiKeyModal] = useState(false)
@@ -28,6 +29,11 @@ export default function Home() {
   const [fileDetails, setFileDetails] = useState<{ id: string, file: File }[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [expiryMinutes, setExpiryMinutes] = useState<number>(0)
+
+  // 压缩设置状态
+  const [compressionQuality, setCompressionQuality] = useState(90)
+  const [compressionMaxWidth, setCompressionMaxWidth] = useState(3840)
+  const [preserveAnimation, setPreserveAnimation] = useState(true)
 
   useEffect(() => {
     if (uploadResults.length > 0 && !showResultSidebar) {
@@ -132,6 +138,11 @@ export default function Home() {
       if (selectedTags.length > 0) {
         formData.append('tags', selectedTags.join(','))
       }
+
+      // 添加压缩参数
+      formData.append('quality', compressionQuality.toString())
+      formData.append('maxWidth', compressionMaxWidth.toString())
+      formData.append('preserveAnimation', preserveAnimation.toString())
 
       // 使用自定义上传方法
       const result = await api.request<UploadResponse>('/api/upload', {
@@ -303,6 +314,18 @@ export default function Home() {
         setExpiryMinutes={setExpiryMinutes}
         onTagsChange={handleTagsChange}
       />
+
+      {/* 压缩设置 */}
+      <div className="mt-6">
+        <CompressionSettings
+          quality={compressionQuality}
+          maxWidth={compressionMaxWidth}
+          preserveAnimation={preserveAnimation}
+          onQualityChange={setCompressionQuality}
+          onMaxWidthChange={setCompressionMaxWidth}
+          onPreserveAnimationChange={setPreserveAnimation}
+        />
+      </div>
 
       {/* 只有在有上传结果且结果侧边栏关闭时显示 */}
       {uploadResults.length > 0 && !showResultSidebar && (

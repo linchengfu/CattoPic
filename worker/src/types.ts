@@ -1,8 +1,60 @@
+// Cloudflare Images binding types
+export interface ImagesBinding {
+  input(source: ReadableStream | ArrayBuffer | Blob): ImageTransformer;
+}
+
+export interface ImageTransformer {
+  transform(options: ImageTransformOptions): ImageTransformer;
+  output(options: ImageOutputOptions): Promise<ImageOutputResult>;
+}
+
+export interface ImageTransformOptions {
+  width?: number;
+  height?: number;
+  fit?: 'scale-down' | 'contain' | 'cover' | 'crop' | 'pad';
+  gravity?: 'auto' | 'left' | 'right' | 'top' | 'bottom' | 'center';
+  quality?: number;
+  rotate?: 0 | 90 | 180 | 270;
+}
+
+export interface ImageOutputOptions {
+  format: 'image/webp' | 'image/avif' | 'image/jpeg' | 'image/png';
+  quality?: number;
+}
+
+export interface ImageOutputResult {
+  image(): ReadableStream;
+  response(): Response;
+  contentType(): string;
+}
+
+// Compression options
+export interface CompressionOptions {
+  quality?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  preserveAnimation?: boolean;
+}
+
+export interface CompressedImage {
+  data: ArrayBuffer;
+  contentType: string;
+  size: number;
+}
+
+export interface CompressionResult {
+  original: ArrayBuffer;
+  webp?: CompressedImage;
+  avif?: CompressedImage;
+  isAnimated: boolean;
+}
+
 // Cloudflare Worker bindings
 export interface Env {
   R2_BUCKET: R2Bucket;
   DB: D1Database;
   ENVIRONMENT: string;
+  IMAGES?: ImagesBinding;
 }
 
 // D1 row type for images table

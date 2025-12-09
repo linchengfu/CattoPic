@@ -167,7 +167,9 @@ export default function Manage() {
       );
 
       if (response.success) {
-        await fetchImages();
+        // 本地更新：从列表中移除删除的图片
+        setImages(prev => prev.filter(img => img.id !== id));
+        setTotalImages(prev => Math.max(0, prev - 1));
         setStatus({
           type: "success",
           message: response.message || "删除成功",
@@ -178,8 +180,7 @@ export default function Manage() {
           message: "删除失败",
         });
       }
-    } catch (error) {
-      console.error("删除失败:", error);
+    } catch {
       setStatus({
         type: "error",
         message: "删除失败",

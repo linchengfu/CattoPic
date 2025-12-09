@@ -39,7 +39,6 @@ export async function request<T>(
 
   // 构建URL
   const url: URL = new URL(endpoint, BASE_URL || window.location.origin);
-  console.log(BASE_URL, url.toString());
   if (params) {
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.append(key, value);

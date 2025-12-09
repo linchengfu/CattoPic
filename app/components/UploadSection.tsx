@@ -24,7 +24,7 @@ interface UploadSectionProps {
 export default function UploadSection({ 
   onUpload, 
   isUploading, 
-  maxUploadCount = 10, 
+  maxUploadCount = 20, 
   onFilesSelected,
   onTogglePreview,
   isPreviewOpen,
