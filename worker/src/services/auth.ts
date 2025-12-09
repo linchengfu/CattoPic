@@ -5,19 +5,13 @@ export class AuthService {
   async validateApiKey(key: string): Promise<boolean> {
     if (!key) return false;
 
+    // Single query: UPDATE with RETURNING to combine SELECT + UPDATE
     const result = await this.db.prepare(`
-      SELECT id FROM api_keys WHERE key = ?
-    `).bind(key).first<{ id: number }>();
+      UPDATE api_keys SET last_used_at = ? WHERE key = ?
+      RETURNING id
+    `).bind(new Date().toISOString(), key).first<{ id: number }>();
 
-    if (result) {
-      // Update last used timestamp
-      await this.db.prepare(`
-        UPDATE api_keys SET last_used_at = ? WHERE key = ?
-      `).bind(new Date().toISOString(), key).run();
-      return true;
-    }
-
-    return false;
+    return result !== null;
   }
 
   async addApiKey(key: string): Promise<void> {

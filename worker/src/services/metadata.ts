@@ -52,31 +52,47 @@ export class MetadataService {
   }
 
   async getImage(id: string): Promise<ImageMetadata | null> {
-    const image = await this.db.prepare(`
-      SELECT * FROM images WHERE id = ?
-    `).bind(id).first<ImageRow>();
+    // Batch: execute image and tags queries in parallel
+    const [imageResult, tagsResult] = await this.db.batch([
+      this.db.prepare(`SELECT * FROM images WHERE id = ?`).bind(id),
+      this.db.prepare(`
+        SELECT t.name FROM tags t
+        JOIN image_tags it ON t.id = it.tag_id
+        WHERE it.image_id = ?
+      `).bind(id)
+    ]);
 
+    const image = (imageResult as D1Result<ImageRow>).results?.[0];
     if (!image) return null;
 
-    const tagsResult = await this.db.prepare(`
-      SELECT t.name FROM tags t
-      JOIN image_tags it ON t.id = it.tag_id
-      WHERE it.image_id = ?
-    `).bind(id).all<{ name: string }>();
-
-    return this.rowToMetadata(image, tagsResult.results?.map(t => t.name) || []);
+    const tags = ((tagsResult as D1Result<{ name: string }>).results || []).map(t => t.name);
+    return this.rowToMetadata(image, tags);
   }
 
   async updateImage(id: string, updates: Partial<ImageMetadata>): Promise<ImageMetadata | null> {
-    const image = await this.getImage(id);
+    // Batch: get image and tags in parallel (avoid separate getImage call)
+    const [imageResult, tagsResult] = await this.db.batch([
+      this.db.prepare(`SELECT * FROM images WHERE id = ?`).bind(id),
+      this.db.prepare(`
+        SELECT t.name FROM tags t
+        JOIN image_tags it ON t.id = it.tag_id
+        WHERE it.image_id = ?
+      `).bind(id)
+    ]);
+
+    const image = (imageResult as D1Result<ImageRow>).results?.[0];
     if (!image) return null;
 
+    const currentTags = ((tagsResult as D1Result<{ name: string }>).results || []).map(t => t.name);
     const statements: D1PreparedStatement[] = [];
+    let finalTags = currentTags;
+    let finalExpiryTime = image.expiry_time;
 
     // Handle tag changes
     if (updates.tags) {
-      const oldTags = new Set(image.tags);
+      const oldTags = new Set(currentTags);
       const newTags = new Set(updates.tags);
+      finalTags = updates.tags;
 
       // Remove old tag associations
       for (const tag of oldTags) {
@@ -107,9 +123,10 @@ export class MetadataService {
 
     // Update expiry time
     if (updates.expiryTime !== undefined) {
+      finalExpiryTime = updates.expiryTime || null;
       statements.push(
         this.db.prepare(`UPDATE images SET expiry_time = ? WHERE id = ?`)
-          .bind(updates.expiryTime || null, id)
+          .bind(finalExpiryTime, id)
       );
     }
 
@@ -117,7 +134,8 @@ export class MetadataService {
       await this.db.batch(statements);
     }
 
-    return this.getImage(id);
+    // Return constructed metadata without re-reading from database
+    return this.rowToMetadata({ ...image, expiry_time: finalExpiryTime }, finalTags);
   }
 
   async deleteImage(id: string): Promise<boolean> {
@@ -192,27 +210,32 @@ export class MetadataService {
     exclude?: string[];
     orientation?: string;
   }): Promise<ImageMetadata | null> {
-    let query = 'SELECT i.* FROM images i';
+    // Build base query and conditions
+    const hasTagFilter = filters?.tags?.length;
+    const hasExcludeFilter = filters?.exclude?.length;
+    const joinClause = hasTagFilter || hasExcludeFilter
+      ? 'JOIN image_tags it ON i.id = it.image_id JOIN tags t ON it.tag_id = t.id'
+      : '';
+
     const whereConditions: string[] = [];
     const params: (string | number)[] = [];
 
     // Tag filter (AND logic)
-    if (filters?.tags?.length) {
-      query += ' JOIN image_tags it ON i.id = it.image_id JOIN tags t ON it.tag_id = t.id';
-      const placeholders = filters.tags.map(() => '?').join(',');
+    if (hasTagFilter) {
+      const placeholders = filters.tags!.map(() => '?').join(',');
       whereConditions.push(`t.name IN (${placeholders})`);
-      params.push(...filters.tags);
+      params.push(...filters.tags!);
     }
 
     // Exclude tags
-    if (filters?.exclude?.length) {
-      const placeholders = filters.exclude.map(() => '?').join(',');
+    if (hasExcludeFilter) {
+      const placeholders = filters.exclude!.map(() => '?').join(',');
       whereConditions.push(`i.id NOT IN (
         SELECT it2.image_id FROM image_tags it2
         JOIN tags t2 ON it2.tag_id = t2.id
         WHERE t2.name IN (${placeholders})
       )`);
-      params.push(...filters.exclude);
+      params.push(...filters.exclude!);
     }
 
     // Orientation filter
@@ -227,14 +250,29 @@ export class MetadataService {
 
     // For AND logic on tags, need GROUP BY and HAVING
     let groupClause = '';
-    if (filters?.tags?.length) {
+    if (hasTagFilter) {
       groupClause = ` GROUP BY i.id HAVING COUNT(DISTINCT t.name) = ?`;
-      params.push(filters.tags.length);
+      params.push(filters.tags!.length);
     }
 
+    // Step 1: Get count of matching images (more efficient than ORDER BY RANDOM())
+    const countResult = await this.db.prepare(`
+      SELECT COUNT(*) as count FROM (
+        SELECT DISTINCT i.id FROM images i ${joinClause} ${whereClause} ${groupClause}
+      )
+    `).bind(...params).first<{ count: number }>();
+
+    const count = countResult?.count || 0;
+    if (count === 0) return null;
+
+    // Step 2: Generate random offset and fetch single record
+    const randomOffset = Math.floor(Math.random() * count);
+
     const result = await this.db.prepare(`
-      ${query} ${whereClause} ${groupClause} ORDER BY RANDOM() LIMIT 1
-    `).bind(...params).first<ImageRow>();
+      SELECT DISTINCT i.id FROM images i ${joinClause} ${whereClause} ${groupClause}
+      ORDER BY i.upload_time DESC
+      LIMIT 1 OFFSET ?
+    `).bind(...params, randomOffset).first<{ id: string }>();
 
     if (!result) return null;
     return this.getImage(result.id);
@@ -242,14 +280,17 @@ export class MetadataService {
 
   // === Tag Management ===
 
-  async getAllTags(): Promise<Tag[]> {
+  async getAllTags(options?: { limit?: number }): Promise<Tag[]> {
+    const limit = options?.limit ?? 1000; // Sensible default to prevent unbounded queries
+
     const result = await this.db.prepare(`
       SELECT t.name, COUNT(it.image_id) as count
       FROM tags t
       LEFT JOIN image_tags it ON t.id = it.tag_id
       GROUP BY t.id, t.name
       ORDER BY t.name
-    `).all<{ name: string; count: number }>();
+      LIMIT ?
+    `).bind(limit).all<{ name: string; count: number }>();
 
     return result.results || [];
   }
@@ -323,38 +364,50 @@ export class MetadataService {
   }
 
   async batchUpdateTags(imageIds: string[], addTags: string[], removeTags: string[]): Promise<number> {
+    if (imageIds.length === 0) return 0;
+
     const statements: D1PreparedStatement[] = [];
 
-    // Ensure all new tags exist
+    // 1. Ensure all new tags exist (small fixed cost)
     for (const tag of addTags) {
       statements.push(
         this.db.prepare(`INSERT OR IGNORE INTO tags (name) VALUES (?)`).bind(tag)
       );
     }
 
-    for (const id of imageIds) {
-      // Remove tags
-      for (const tag of removeTags) {
-        statements.push(
-          this.db.prepare(`
-            DELETE FROM image_tags WHERE image_id = ?
-            AND tag_id = (SELECT id FROM tags WHERE name = ?)
-          `).bind(id, tag)
-        );
-      }
-
-      // Add tags
-      for (const tag of addTags) {
-        statements.push(
-          this.db.prepare(`
-            INSERT OR IGNORE INTO image_tags (image_id, tag_id)
-            SELECT ?, id FROM tags WHERE name = ?
-          `).bind(id, tag)
-        );
-      }
+    // Execute tag creation first if needed
+    if (statements.length > 0) {
+      await this.db.batch(statements);
     }
 
-    await this.db.batch(statements);
+    // 2. Bulk remove: single DELETE with IN clauses (instead of N*M individual DELETEs)
+    if (removeTags.length > 0) {
+      const imgPlaceholders = imageIds.map(() => '?').join(',');
+      const tagPlaceholders = removeTags.map(() => '?').join(',');
+      await this.db.prepare(`
+        DELETE FROM image_tags
+        WHERE image_id IN (${imgPlaceholders})
+        AND tag_id IN (SELECT id FROM tags WHERE name IN (${tagPlaceholders}))
+      `).bind(...imageIds, ...removeTags).run();
+    }
+
+    // 3. Bulk add: single INSERT for each tag across all images
+    if (addTags.length > 0) {
+      const addStatements: D1PreparedStatement[] = [];
+      for (const tag of addTags) {
+        // For each tag, insert associations for all imageIds at once
+        const imgPlaceholders = imageIds.map(() => '?').join(',');
+        addStatements.push(
+          this.db.prepare(`
+            INSERT OR IGNORE INTO image_tags (image_id, tag_id)
+            SELECT image_id, (SELECT id FROM tags WHERE name = ?)
+            FROM (SELECT ? AS image_id ${imageIds.slice(1).map(() => 'UNION ALL SELECT ?').join(' ')})
+          `).bind(tag, ...imageIds)
+        );
+      }
+      await this.db.batch(addStatements);
+    }
+
     return imageIds.length;
   }
 
