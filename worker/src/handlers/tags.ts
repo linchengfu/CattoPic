@@ -13,7 +13,8 @@ export async function tagsHandler(c: Context<{ Bindings: Env }>): Promise<Respon
     const cacheKey = CacheKeys.tagsList();
 
     // Try to get from cache
-    const cached = await cache.get<ReturnType<typeof successResponse>>(cacheKey);
+    interface TagsCacheData { tags: { name: string; count: number }[] }
+    const cached = await cache.get<TagsCacheData>(cacheKey);
     if (cached) {
       return successResponse(cached);
     }
@@ -21,7 +22,7 @@ export async function tagsHandler(c: Context<{ Bindings: Env }>): Promise<Respon
     const metadata = new MetadataService(c.env.DB);
     const tags = await metadata.getAllTags();
 
-    const responseData = { tags };
+    const responseData: TagsCacheData = { tags };
 
     // Store in cache
     await cache.set(cacheKey, responseData, CACHE_TTL.TAGS_LIST);

@@ -67,12 +67,9 @@ export function useTags(): UseTagsReturn {
       }
       return response;
     },
-    onSuccess: (response, name) => {
-      // Optimistic update
-      queryClient.setQueryData<Tag[]>(queryKeys.tags.list(), (old) => {
-        if (!old) return [{ name, count: 0 }];
-        return [...old, response.tag || { name, count: 0 }];
-      });
+    onSuccess: () => {
+      // Invalidate and refetch tags list
+      queryClient.invalidateQueries({ queryKey: queryKeys.tags.list() });
     },
   });
 
@@ -89,13 +86,6 @@ export function useTags(): UseTagsReturn {
       return { oldName, newName, response };
     },
     onSuccess: ({ oldName, newName }) => {
-      // Optimistic update
-      queryClient.setQueryData<Tag[]>(queryKeys.tags.list(), (old) => {
-        if (!old) return old;
-        return old.map((tag) =>
-          tag.name === oldName ? { ...tag, name: newName } : tag
-        );
-      });
       // Update selection
       setSelectedTags((prev) => {
         if (prev.has(oldName)) {
@@ -106,7 +96,8 @@ export function useTags(): UseTagsReturn {
         }
         return prev;
       });
-      // Invalidate image lists as tag names changed
+      // Invalidate tags and image lists
+      queryClient.invalidateQueries({ queryKey: queryKeys.tags.list() });
       queryClient.invalidateQueries({ queryKey: queryKeys.images.lists() });
     },
   });
@@ -123,18 +114,14 @@ export function useTags(): UseTagsReturn {
       return name;
     },
     onSuccess: (name) => {
-      // Optimistic update
-      queryClient.setQueryData<Tag[]>(queryKeys.tags.list(), (old) => {
-        if (!old) return old;
-        return old.filter((tag) => tag.name !== name);
-      });
       // Update selection
       setSelectedTags((prev) => {
         const next = new Set(prev);
         next.delete(name);
         return next;
       });
-      // Invalidate image lists as images may have been deleted
+      // Invalidate tags and image lists
+      queryClient.invalidateQueries({ queryKey: queryKeys.tags.list() });
       queryClient.invalidateQueries({ queryKey: queryKeys.images.lists() });
     },
   });

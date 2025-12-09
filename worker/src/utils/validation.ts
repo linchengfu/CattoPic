@@ -1,8 +1,10 @@
 // Validation Utilities
 
 export function isValidUUID(str: string): boolean {
+  // Support both standard UUID and image ID format (YYYYMMDD-XXXXXXXX)
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(str);
+  const imageIdRegex = /^\d{8}-[0-9a-f]{8}$/i;
+  return uuidRegex.test(str) || imageIdRegex.test(str);
 }
 
 export function generateUUID(): string {
