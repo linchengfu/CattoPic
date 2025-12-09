@@ -1,28 +1,28 @@
 'use client'
 
 import { motion, AnimatePresence } from 'motion/react'
-import { 
-  ImageIcon, 
-  FileIcon, 
-  Cross1Icon, 
-  TrashIcon, 
+import {
+  ImageIcon,
+  Cross1Icon,
+  TrashIcon,
   UploadIcon,
-  Spinner
+  Spinner,
+  Cross2Icon,
 } from '../ui/icons'
-
-interface ImageFile {
-  id: string
-  file: File
-}
+import { UploadPhase, UploadFileItem, FileUploadStatus } from '../../types/upload'
+import UploadStatusIndicator, { getStatusText, getStatusColorClass } from './UploadStatusIndicator'
 
 interface PreviewSidebarProps {
-  files: ImageFile[]
+  files: UploadFileItem[]
+  phase: UploadPhase
+  completedCount: number
+  errorCount: number
   onRemoveFile: (id: string) => void
   onRemoveAll: () => void
   isOpen: boolean
   onClose: () => void
   onUpload: () => void
-  isUploading: boolean
+  onCancelUpload: () => void
 }
 
 // 将文件大小转换为可读格式
@@ -34,34 +34,61 @@ const formatFileSize = (bytes: number): string => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
-// 获取文件图标 (保留以备将来使用)
-const _getFileIcon = (fileName: string) => {
-  const extension = fileName.split('.').pop()?.toLowerCase()
-  
-  switch (extension) {
-    case 'jpg':
-    case 'jpeg':
-    case 'png':
-    case 'gif':
-    case 'webp':
-    case 'avif':
-    case 'bmp':
-      return <ImageIcon className="h-10 w-10 text-indigo-400" />
+// 获取头部标题
+const getHeaderTitle = (phase: UploadPhase, totalFiles: number, completedCount: number, errorCount: number): string => {
+  switch (phase) {
+    case 'idle':
+      return `待上传图片 (${totalFiles})`
+    case 'uploading':
+      return `上传中... (${totalFiles})`
+    case 'processing':
+      return `处理中... (${totalFiles})`
+    case 'completed':
+      if (errorCount > 0) {
+        return `完成 (${completedCount} 成功, ${errorCount} 失败)`
+      }
+      return `上传完成 (${completedCount})`
     default:
-      return <FileIcon className="h-10 w-10 text-gray-400" />
+      return `待上传图片 (${totalFiles})`
   }
 }
-void _getFileIcon;
 
-export default function PreviewSidebar({ 
-  files, 
-  onRemoveFile, 
-  onRemoveAll, 
-  isOpen, 
+// 获取头部背景色
+const getHeaderBgClass = (phase: UploadPhase, errorCount: number): string => {
+  if (phase === 'completed' && errorCount > 0) {
+    return 'bg-amber-600'
+  }
+  if (phase === 'completed') {
+    return 'bg-green-600'
+  }
+  return 'bg-indigo-600'
+}
+
+// 判断文件是否可以删除
+const canRemoveFile = (status: FileUploadStatus): boolean => {
+  return status === 'pending' || status === 'error'
+}
+
+// 判断是否正在上传过程中
+const isUploading = (phase: UploadPhase): boolean => {
+  return phase === 'uploading' || phase === 'processing'
+}
+
+export default function PreviewSidebar({
+  files,
+  phase,
+  completedCount,
+  errorCount,
+  onRemoveFile,
+  onRemoveAll,
+  isOpen,
   onClose,
   onUpload,
-  isUploading
+  onCancelUpload,
 }: PreviewSidebarProps) {
+  const uploading = isUploading(phase)
+  const totalFiles = files.length
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -74,14 +101,19 @@ export default function PreviewSidebar({
           style={{ backdropFilter: 'blur(12px)' }}
         >
           {/* 侧边栏头部 */}
-          <div className="flex items-center justify-between p-4 border-b border-slate-200/50 dark:border-slate-700/50 bg-indigo-600 text-white">
+          <div className={`flex items-center justify-between p-4 border-b border-slate-200/50 dark:border-slate-700/50 ${getHeaderBgClass(phase, errorCount)} text-white transition-colors duration-300`}>
             <h2 className="text-lg font-semibold flex items-center">
-              <ImageIcon className="h-5 w-5 mr-2 text-white opacity-90" />
-              待上传图片 ({files.length})
+              {uploading ? (
+                <Spinner className="h-5 w-5 mr-2 text-white" />
+              ) : (
+                <ImageIcon className="h-5 w-5 mr-2 text-white opacity-90" />
+              )}
+              {getHeaderTitle(phase, totalFiles, completedCount, errorCount)}
             </h2>
             <button
               onClick={onClose}
-              className="p-2 rounded-full hover:bg-white/10 transition-colors"
+              disabled={uploading}
+              className="p-2 rounded-full hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Cross1Icon className="h-5 w-5" />
             </button>
@@ -97,40 +129,60 @@ export default function PreviewSidebar({
               </div>
             ) : (
               <div className="space-y-3">
-                {files.map((file, index) => (
+                {files.map((item, index) => (
                   <motion.div
-                    key={file.id}
+                    key={item.id}
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    className="group flex items-center p-3 bg-slate-200/50 dark:bg-slate-700/30 rounded-lg border border-slate-300/30 dark:border-slate-600/30 hover:bg-slate-200/80 dark:hover:bg-slate-700/50 transition-all duration-200"
+                    transition={{ delay: index * 0.03 }}
+                    className={`group flex items-center p-3 rounded-lg border transition-all duration-200 ${
+                      item.status === 'success'
+                        ? 'bg-green-50/50 dark:bg-green-900/10 border-green-200/50 dark:border-green-800/30'
+                        : item.status === 'error'
+                        ? 'bg-red-50/50 dark:bg-red-900/10 border-red-200/50 dark:border-red-800/30'
+                        : 'bg-slate-200/50 dark:bg-slate-700/30 border-slate-300/30 dark:border-slate-600/30 hover:bg-slate-200/80 dark:hover:bg-slate-700/50'
+                    }`}
                   >
+                    {/* 状态指示器 */}
                     <div className="shrink-0 mr-3">
-                      <div className="w-12 h-12 flex items-center justify-center overflow-hidden bg-indigo-100 dark:bg-indigo-900/20 rounded-lg">
-                        <ImageIcon className="h-8 w-8 text-indigo-400" />
+                      <div className="w-12 h-12 flex items-center justify-center overflow-hidden bg-white/50 dark:bg-slate-800/50 rounded-lg">
+                        <UploadStatusIndicator status={item.status} size="md" />
                       </div>
                     </div>
+
+                    {/* 文件信息 */}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">
-                        {file.file.name}
+                        {item.file.name}
                       </p>
                       <div className="flex items-center mt-1">
-                        <span className="text-xs text-slate-500 dark:text-slate-400">
-                          {formatFileSize(file.file.size)}
-                        </span>
-                        {file.file.type && (
-                          <span className="ml-2 text-xs text-slate-500 dark:text-slate-400">
-                            {file.file.type.split('/')[1].toUpperCase()}
+                        {item.status === 'error' && item.error ? (
+                          <span className="text-xs text-red-500 truncate">
+                            {item.error}
                           </span>
+                        ) : (
+                          <>
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
+                              {formatFileSize(item.file.size)}
+                            </span>
+                            <span className="mx-1.5 text-slate-300 dark:text-slate-600">|</span>
+                            <span className={`text-xs ${getStatusColorClass(item.status)}`}>
+                              {getStatusText(item.status)}
+                            </span>
+                          </>
                         )}
                       </div>
                     </div>
-                    <button
-                      onClick={() => onRemoveFile(file.id)}
-                      className="shrink-0 p-2 rounded-full text-slate-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                    >
-                      <TrashIcon className="h-5 w-5" />
-                    </button>
+
+                    {/* 操作按钮 */}
+                    {canRemoveFile(item.status) && (
+                      <button
+                        onClick={() => onRemoveFile(item.id)}
+                        className="shrink-0 p-2 rounded-full text-slate-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                      >
+                        <TrashIcon className="h-5 w-5" />
+                      </button>
+                    )}
                   </motion.div>
                 ))}
               </div>
@@ -141,22 +193,46 @@ export default function PreviewSidebar({
           {files.length > 0 && (
             <div className="p-4 border-t border-slate-200/50 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/50">
               <div className="flex space-x-2">
-                <button
-                  onClick={onRemoveAll}
-                  className="px-4 py-2 flex items-center justify-center bg-white hover:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg transition-colors duration-200 font-medium border border-slate-200 dark:border-slate-600"
-                >
-                  <TrashIcon className="h-4 w-4 mr-2" />
-                  清除全部
-                </button>
+                {uploading ? (
+                  // 上传中显示取消按钮
+                  <button
+                    onClick={onCancelUpload}
+                    className="px-4 py-2 flex items-center justify-center bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg transition-colors duration-200 font-medium border border-red-200 dark:border-red-800/50"
+                  >
+                    <Cross2Icon className="h-4 w-4 mr-2" />
+                    取消上传
+                  </button>
+                ) : (
+                  // 空闲或完成时显示清除按钮
+                  <button
+                    onClick={onRemoveAll}
+                    disabled={phase === 'completed' && errorCount === 0}
+                    className="px-4 py-2 flex items-center justify-center bg-white hover:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg transition-colors duration-200 font-medium border border-slate-200 dark:border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <TrashIcon className="h-4 w-4 mr-2" />
+                    清除全部
+                  </button>
+                )}
+
                 <button
                   onClick={onUpload}
-                  disabled={isUploading}
+                  disabled={uploading || (phase === 'completed' && errorCount === 0)}
                   className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors duration-200 font-medium flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {isUploading ? (
+                  {phase === 'uploading' ? (
                     <>
                       <Spinner className="-ml-1 mr-2 h-5 w-5 text-white" />
                       上传中...
+                    </>
+                  ) : phase === 'processing' ? (
+                    <>
+                      <Spinner className="-ml-1 mr-2 h-5 w-5 text-white" />
+                      处理中...
+                    </>
+                  ) : phase === 'completed' && errorCount > 0 ? (
+                    <>
+                      <UploadIcon className="h-5 w-5 mr-2" />
+                      重试失败项
                     </>
                   ) : (
                     <>
@@ -172,4 +248,4 @@ export default function PreviewSidebar({
       )}
     </AnimatePresence>
   )
-} 
+}

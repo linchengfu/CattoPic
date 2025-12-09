@@ -1,26 +1,25 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { getApiKey, validateApiKey, setApiKey } from './utils/auth'
 import { api } from './utils/request'
 import ApiKeyModal from './components/ApiKeyModal'
 import { UploadResponse, StatusMessage as StatusMessageType, ConfigSettings } from './types'
 import Header from './components/Header'
 import UploadSection from './components/UploadSection'
-import UploadProgress from './components/UploadProgress'
 import ImageSidebar from './components/ImageSidebar'
 import PreviewSidebar from './components/upload/PreviewSidebar'
 import CompressionSettings from './components/upload/CompressionSettings'
 import { motion } from 'motion/react'
 import { ImageIcon, PlusCircledIcon } from './components/ui/icons'
 import { useInvalidateImages } from './hooks/useImages'
+import { useUploadState } from './hooks/useUploadState'
+import { UploadFileItem } from './types/upload'
 
 const DEFAULT_MAX_UPLOAD_COUNT = 20;
 
 export default function Home() {
   const [showApiKeyModal, setShowApiKeyModal] = useState(false)
-  const [isUploading, setIsUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
   const [status, setStatus] = useState<StatusMessageType | null>(null)
   const [uploadResults, setUploadResults] = useState<UploadResponse['results']>([])
   const [showResultSidebar, setShowResultSidebar] = useState(false)
@@ -33,6 +32,13 @@ export default function Home() {
 
   // TanStack Query cache invalidation hook
   const invalidateImages = useInvalidateImages()
+
+  // 上传状态管理
+  const uploadState = useUploadState()
+  const { phase, files: uploadFiles, completedCount, errorCount, initializeUpload, setPhase, setAllFilesStatus, setResults, cancelUpload, reset: resetUploadState } = uploadState
+
+  // 判断是否正在上传
+  const isUploading = phase === 'uploading' || phase === 'processing'
 
   // 压缩设置状态
   const [compressionQuality, setCompressionQuality] = useState(90)
@@ -105,7 +111,7 @@ export default function Home() {
 
   const handleUpload = async () => {
     const selectedFiles = fileDetails.map(item => item.file)
-    
+
     if (selectedFiles.length === 0) return
 
     const apiKey = getApiKey()
@@ -114,21 +120,12 @@ export default function Home() {
       return
     }
 
-    setIsUploading(true)
-    setUploadProgress(0)
     setStatus(null)
 
-    try {
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => {
-          if (prev >= 90) {
-            clearInterval(progressInterval)
-            return prev
-          }
-          return prev + 5
-        })
-      }, 300)
+    // 初始化上传状态，获取 AbortController
+    const controller = initializeUpload(fileDetails)
 
+    try {
       // 添加过期时间参数
       const formData = new FormData()
       selectedFiles.forEach(file => {
@@ -148,14 +145,23 @@ export default function Home() {
       formData.append('maxWidth', compressionMaxWidth.toString())
       formData.append('preserveAnimation', preserveAnimation.toString())
 
-      // 使用自定义上传方法
+      // 延迟切换到处理阶段
+      const processingTimeout = setTimeout(() => {
+        setPhase('processing')
+        setAllFilesStatus('processing')
+      }, 2000)
+
+      // 使用自定义上传方法，传入 AbortController 的 signal
       const result = await api.request<UploadResponse>('/api/upload', {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       })
 
-      clearInterval(progressInterval)
-      setUploadProgress(100)
+      clearTimeout(processingTimeout)
+
+      // 设置结果
+      setResults(result.results)
 
       const resultsWithIds = result.results.map(item => {
         // Extract the real image ID from the original URL if available
@@ -180,12 +186,12 @@ export default function Home() {
 
       setUploadResults(resultsWithIds)
       const successCount = resultsWithIds.filter(r => r.status === 'success').length
-      const errorCount = resultsWithIds.filter(r => r.status === 'error').length
+      const failedCount = resultsWithIds.filter(r => r.status === 'error').length
       const totalCount = resultsWithIds.length
 
       setStatus({
-        type: errorCount === 0 ? 'success' : 'warning',
-        message: `上传完成：共${totalCount}张，${successCount}张成功，${errorCount}张失败`
+        type: failedCount === 0 ? 'success' : 'warning',
+        message: `上传完成：共${totalCount}张，${successCount}张成功，${failedCount}张失败`
       })
 
       // Invalidate image list cache so manage page shows new images immediately
@@ -194,6 +200,15 @@ export default function Home() {
       // 重置文件详情，清空上传队列
       setFileDetails([])
     } catch (error) {
+      // 检查是否是用户取消
+      if (error instanceof Error && error.name === 'AbortError') {
+        setStatus({
+          type: 'warning',
+          message: '上传已取消'
+        })
+        return
+      }
+
       let errorMessage = '上传失败，请重试'
 
       if (error instanceof Error) {
@@ -208,11 +223,20 @@ export default function Home() {
         type: 'error',
         message: errorMessage
       })
-    } finally {
-      setIsUploading(false)
-      setTimeout(() => setUploadProgress(0), 1000)
+
+      // 重置上传状态
+      resetUploadState()
     }
   }
+
+  // 取消上传处理
+  const handleCancelUpload = useCallback(() => {
+    cancelUpload()
+    setStatus({
+      type: 'warning',
+      message: '上传已取消'
+    })
+  }, [cancelUpload])
 
   const handleDeleteImage = async (id: string) => {
     try {
@@ -368,8 +392,6 @@ export default function Home() {
         </motion.button>
       )}
 
-      {isUploading && <UploadProgress progress={uploadProgress} />}
-
       {/* 上传结果侧边栏 */}
       <ImageSidebar
         isOpen={showResultSidebar}
@@ -380,13 +402,16 @@ export default function Home() {
 
       {/* 待上传图片预览侧边栏 */}
       <PreviewSidebar
-        files={fileDetails}
+        files={phase === 'idle' ? fileDetails.map(f => ({ ...f, status: 'pending' as const })) : uploadFiles}
+        phase={phase}
+        completedCount={completedCount}
+        errorCount={errorCount}
         onRemoveFile={handleRemoveFile}
         onRemoveAll={handleRemoveAllFiles}
         isOpen={showPreviewSidebar}
         onClose={() => setShowPreviewSidebar(false)}
         onUpload={handleUpload}
-        isUploading={isUploading}
+        onCancelUpload={handleCancelUpload}
       />
 
       <ApiKeyModal
